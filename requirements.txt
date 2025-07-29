@@ -1,0 +1,10 @@
+leafmap
+fiona
+streamlit
+boto3
+localtileserver
+geopandas
+folium
+rasterio
+xarray
+pyproj
