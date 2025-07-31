@@ -4,7 +4,8 @@ from os.path import (
     exists,
     splitext,
     getsize,
-    getmtime
+    getmtime,
+    dirname
 )
 from typing import Literal
 from datetime import datetime
@@ -13,14 +14,18 @@ import streamlit as st
 import boto3
 import numpy as np
 import rasterio
+from rasterio.warp import calculate_default_transform, reproject, Resampling
+import folium
 import leafmap.foliumap as leafmap
+import matplotlib.pyplot as plt
 
 @st.cache_data
 def calculate_vmin_vmax(
-    image_path,
+    image_path: str|np.ndarray,
     method: Literal['std_dev', 'min_max', 'percent_clip']='min_max',
     percent_clip=(2, 98),
-    std_factor=2
+    std_factor=2,
+    nodata=None
 ):
     """
     Compute vmin and vmax for raster visualization.
@@ -34,9 +39,15 @@ def calculate_vmin_vmax(
     Returns:
         tuple: (vmin, vmax)
     """
-    with rasterio.open(image_path) as src:
-        data = src.read(1).astype(np.float64)  # Read first band
-        nodata = src.nodata
+    if isinstance(image_path, np.ndarray):
+        data = image_path
+        nodata = nodata if nodata is not None else np.nan
+    elif isinstance(image_path, str):
+        with rasterio.open(image_path) as src:
+            data = src.read(1).astype(np.float64)  # Read first band
+            nodata = src.nodata
+    else:
+        raise ValueError("image_path must be a string or a numpy array.")
 
     # Mask NoData, NaN, and Inf values
     valid_data = data[~np.isnan(data) & ~np.isinf(data)]
@@ -117,6 +128,109 @@ def visualize_raster(
 
     return m
 
+def visualize_raster_png(
+    img_path,
+    layer_name=None,
+    colormap='binary',
+    vmin=None,
+    vmax=None
+):
+    """
+    Visualize a raster image using leafmap.
+
+    Parameters:
+        img_path (str): Path to the raster image.
+        layer_name (str): Name for the layer in the map.
+        colormap (str): Colormap for the visualization.
+        vmin (float): Minimum value for the
+        vmax (float): Maximum value for the visualization.
+    """
+
+    m = leafmap.Map(center=[20, 0], zoom=2)
+    if layer_name is None:
+        layer_name = splitext(basename(img_path))[0]
+    
+    dst_path = join(dirname(img_path), layer_name + '_wgs84.tif')
+    png_path = dst_path.replace('.tif', '.png')
+    if not exists(dst_path) or getmtime(dst_path) < datetime.now().timestamp() - 24 * 3600 or not exists(png_path):
+        with rasterio.open(img_path) as src:
+            transform, width, height = calculate_default_transform(
+                src.crs, "EPSG:4326", src.width, src.height, *src.bounds
+            )
+            kwargs = src.meta.copy()
+            kwargs.update({
+                'crs': 'EPSG:4326',
+                'transform': transform,
+                'width': width,
+                'height': height
+            })
+
+            with rasterio.open(dst_path, 'w', **kwargs) as dst:
+                for i in range(1, src.count + 1):
+                    reproject(
+                        source=rasterio.band(src, i),
+                        destination=rasterio.band(dst, i),
+                        src_transform=src.transform,
+                        src_crs=src.crs,
+                        dst_transform=transform,
+                        dst_crs='EPSG:4326',
+                        resampling=Resampling.nearest
+                    )
+
+        with rasterio.open(dst_path) as src:
+            image = src.read(1)
+            bounds = src.bounds
+            nodata = src.nodata
+
+            # # Mask NoData, NaN, and Inf values
+            # valid_data = image[~np.isnan(image) & ~np.isinf(image)]
+            # if nodata is not None:
+            #     valid_data = valid_data[valid_data != nodata]
+            # Mask nodata
+            if nodata is not None:
+                mask = (image != nodata) & (~np.isnan(image)) & (~np.isinf(image))
+            else:
+                mask = np.ones_like(image, dtype=bool)
+            
+            # Normalize valid data to 0-255
+            valid_data = image[mask]
+            if valid_data.size > 0:
+                if vmin is None or vmax is None:
+                    # v_min, v_max = valid_data.min(), valid_data.max()
+                    v_min, v_max = calculate_vmin_vmax(valid_data, method='std_dev')
+                    print(f"{v_min= }, {v_max= }")
+                norm = np.zeros_like(image, dtype=np.uint8)
+                norm[mask] = ((image[mask] - v_min) / (v_max - v_min) * 255).astype(np.uint8)
+            else:
+                norm = np.zeros_like(image, dtype=np.uint8)
+
+            # Create an RGBA image: set alpha=0 where value is 0, else alpha=255
+            cmap = plt.cm.get_cmap(colormap)
+            rgba = cmap(norm)
+            rgba[..., 3] = mask.astype(float)  # alpha=1 for non-zero, 0 for zero
+            plt.imsave(png_path, rgba)
+    else:
+        with rasterio.open(dst_path) as src:
+            bounds = src.bounds
+
+    folium_bounds = [[bounds.bottom, bounds.left], [bounds.top, bounds.right]]
+    # center = [(bounds.top + bounds.bottom) / 2, (bounds.left + bounds.right) / 2]
+
+    img = folium.raster_layers.ImageOverlay(
+        name=layer_name,
+        image=png_path,
+        bounds=folium_bounds,
+        opacity=1.0,
+        interactive=True,
+        cross_origin=False,
+        zindex=1,
+    )
+    img.add_to(m)
+    m.zoom_to_bounds(bounds)
+    folium.LayerControl().add_to(m)
+
+    return m
+
 def create_map(bucket_name, key, layer_name, session_temp_dir):
 
     # Ensure the file_path is downloaded before adding to the map
@@ -131,7 +245,7 @@ def create_map(bucket_name, key, layer_name, session_temp_dir):
             # st.warning("The file is larger than 100MB, which may cause performance issues.")
             build_overviews = True
         
-        m = visualize_raster(
+        m = visualize_raster_png(
             file_path,
             layer_name=layer_name,
             colormap='binary',
