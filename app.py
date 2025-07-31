@@ -3,7 +3,10 @@ from os.path import join
 import tempfile
 import streamlit as st
 import pandas as pd
-from utils import create_map, download_from_s3, list_folders
+from utils import (
+    create_map, download_from_s3, 
+    list_folders, delete_old_files
+)
 
 # Sample dataset dictionary: keys are dataset names, and values are S3 paths
 AWS_ACCESS_KEY_ID = st.secrets["AWS_ACCESS_KEY_ID"]
@@ -42,6 +45,10 @@ DATASETS = {
 
 SESSION_TEMP_DIR = join(tempfile.gettempdir(), "streamlit_data_visualizer_app_session")
 # print(f"Session temp directory: {SESSION_TEMP_DIR}")
+if not os.path.exists(SESSION_TEMP_DIR):
+    os.makedirs(SESSION_TEMP_DIR)
+# Delete files in SESSION_TEMP_DIR recursively if older than 24 hours
+delete_old_files(SESSION_TEMP_DIR, age_hours=48)
 
 st.set_page_config(layout="wide")
 st.title("Geospatial Data Visualizer")

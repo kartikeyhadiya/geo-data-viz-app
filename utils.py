@@ -1,3 +1,5 @@
+from datetime import datetime
+import os
 from os.path import (
     join,
     basename,
@@ -8,7 +10,6 @@ from os.path import (
     dirname
 )
 from typing import Literal
-from datetime import datetime
 
 import streamlit as st
 import boto3
@@ -110,8 +111,8 @@ def visualize_raster(
         layer_name = splitext(basename(img_path))[0]
 
     if vmin is None or vmax is None:
-      v_min, v_max = calculate_vmin_vmax(img_path, method='std_dev')
-      print(f"{v_min= }, {v_max= }")
+        v_min, v_max = calculate_vmin_vmax(img_path, method='std_dev')
+        print(f"{v_min= }, {v_max= }")
 
     if build_overviews:
         # Build overviews for .tif and .tiff files
@@ -280,3 +281,12 @@ def list_folders(bucket_name, prefix):
         for prefix_data in page.get('CommonPrefixes', []):
             folders.add(prefix_data.get('Prefix').split('/')[-2])
     return folders
+
+def delete_old_files(directory, age_hours=24):
+    now = datetime.now().timestamp()
+    for root, dirs, files in os.walk(directory):
+        for file in files:
+            file_path = join(root, file)
+            if getmtime(file_path) < (now - age_hours * 3600):
+                os.remove(file_path)
+                print(f"Deleted old file: {file_path}")
